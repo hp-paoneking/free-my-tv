@@ -47,6 +47,7 @@ final class Recs {
         String kind;            // "movie" or "tv"
         String title, backdrop, meta = "", app, pkg;
         String link;            // opens the title in its app (looked up with Watchmode), or null: the app's home
+        String poster;          // TMDB poster (the tall cards), or null: a slice of the backdrop
         boolean detailed;
     }
 
@@ -55,11 +56,13 @@ final class Recs {
     private static final String API = "https://api.themoviedb.org/3";
     /** The backdrops: on a 720p UI, TMDB's 1280-wide copy shows the same and is lighter to download and decode. */
     private static final String IMAGES = "https://image.tmdb.org/t/p/" + (Backdrop.W <= 1280 ? "w1280" : "original");
+    /** Posters: the tall cards are at most 336 px wide, TMDB's w500 is plenty. */
+    private static final String POSTERS = "https://image.tmdb.org/t/p/w500";
     /** TMDB's Animation genre (movies and shows: cartoons and anime), left out with hide_animation=true. */
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 3;
+    private static final int CACHE_VERSION = 4;
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
     private static final String[][] SERVICES = {
@@ -121,6 +124,7 @@ final class Recs {
     private volatile boolean fetching;
     private volatile String error = "";
     private volatile boolean light;     // light design: builds only the cards (all three tabs' cards fit in memory)
+    private volatile boolean expanded;  // expanded layout: five picks a tab, smaller cards (Prefs.layout)
     private volatile long failedAt, keyStamp, linkRetryAt;
     private volatile String listLanguage = "";   // language used for the saved titles, genres and texts
 
@@ -184,7 +188,7 @@ final class Recs {
         return now(null);
     }
 
-    /** This hour's 3, movies only ("movie") or shows only ("tv"); null = both (the home screen tabs). */
+    /** This hour's 3 (5 in the expanded layout), movies only ("movie") or shows only ("tv"); null = both. */
     List<Pick> now(String kind) {
         List<Pick> list = new ArrayList<>();
         if (!hasKey(context)) return list;    // no TMDB key: no recommendations
@@ -195,11 +199,12 @@ final class Recs {
         }
         if (list.isEmpty()) return list;
         long hour = System.currentTimeMillis() / 3600_000L;
-        // Three per hour, never two from the same franchise ("Law & Order" and "Law & Order: Special…").
+        // A new set every hour, never two from the same franchise ("Law & Order" and "Law & Order: Special…").
+        int count = expanded ? 5 : 3;
         List<Pick> out = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
-        for (int i = 0; i < list.size() && out.size() < 3; i++) {
-            Pick p = list.get((int) ((hour * 3 + i) % list.size()));
+        for (int i = 0; i < list.size() && out.size() < count; i++) {
+            Pick p = list.get((int) ((hour * count + i) % list.size()));
             if (seen.add(franchise(p.title))) out.add(p);
         }
         return out;
@@ -301,6 +306,16 @@ final class Recs {
         synchronized (images) {
             images.clear();
         }
+    }
+
+    /** Layout: its cards have other sizes, so the ready ones are dropped and built again. */
+    void setExpanded(boolean value) {
+        if (value == expanded) return;
+        expanded = value;
+        synchronized (images) {
+            images.clear();
+        }
+        notifyListeners();
     }
 
     /**
@@ -475,7 +490,13 @@ final class Recs {
         p.kind = kind;
         p.title = o.optString(kind.equals("movie") ? "title" : "name");
         p.backdrop = backdrop;
+        p.poster = path(o.optString("poster_path", ""));
         list.add(p);
+    }
+
+    /** A TMDB image path, or null when there is none. */
+    private static String path(String v) {
+        return v == null || v.isEmpty() || "null".equals(v) ? null : v;
     }
 
     private static boolean animated(JSONObject o) {
@@ -491,6 +512,8 @@ final class Recs {
         p.title = title(p, o);
         String best = bestBackdrop(o.optJSONObject("images"));
         if (best != null) p.backdrop = best;
+        String poster = path(o.optString("poster_path", ""));   // in the title's language, when TMDB has one
+        if (poster != null) p.poster = poster;
         List<String> parts = new ArrayList<>();
         JSONArray genres = o.optJSONArray("genres");
         if (p.kind.equals("tv")) parts.add(Ui.tr("Series"));
@@ -700,15 +723,22 @@ final class Recs {
         return key.isEmpty() ? null : key;
     }
 
-    // MARK: - Images (TMDB originals on disk, up to 24 so the whole list fits; this hour's kept ready in memory)
+    // MARK: - Images (TMDB originals on disk, a backdrop and a poster for up to 24 titles; this hour's kept ready in memory)
 
     private void download(Pick p) throws IOException {
-        File f = imageFile(p);
+        download(IMAGES + p.backdrop, imageFile(p));
+    }
+
+    private File posterFile(Pick p) {
+        return new File(new File(context.getCacheDir(), "recs"), "poster" + p.poster.replace("/", ""));
+    }
+
+    private void download(String url, File f) throws IOException {
         if (f.exists()) return;
         //noinspection ResultOfMethodCallIgnored
         f.getParentFile().mkdirs();
         File part = new File(f.getPath() + ".part");
-        HttpURLConnection c = (HttpURLConnection) new URL(IMAGES + p.backdrop).openConnection();
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(8000);
         c.setReadTimeout(20000);
         try (InputStream in = c.getInputStream(); FileOutputStream out = new FileOutputStream(part)) {
@@ -743,18 +773,41 @@ final class Recs {
             Bitmap b = BitmapFactory.decodeFile(f.getPath(), opts);
             if (b == null) throw new IOException("unreadable image");
             AppLog.w("backdrop \u201c" + p.title + "\u201d: " + bounds.outWidth + "×" + bounds.outHeight + " → " + Backdrop.W + "×" + Backdrop.H);
-            boolean forLight = light;
-            Backdrop backdrop = Backdrop.make(b, forLight);
-            if (forLight != light) return;   // the design changed midway: this one is stale
+            boolean forLight = light, forExpanded = expanded;
+            Backdrop backdrop = Backdrop.make(b, forLight ? poster(p) : null, forLight, forExpanded);
+            if (forLight != light || forExpanded != expanded) return;   // the design changed midway: this one is stale
             synchronized (images) {
                 images.put(p.backdrop, backdrop);
-                while (images.size() > (forLight ? 10 : 4)) images.remove(images.keySet().iterator().next());
+                while (images.size() > (forLight ? 16 : 4)) images.remove(images.keySet().iterator().next());
             }
             notifyListeners();
         } catch (IOException | RuntimeException | OutOfMemoryError e) {
             //noinspection ResultOfMethodCallIgnored
             f.delete();
             AppLog.w("recommendation image: " + e.getMessage());
+        }
+    }
+
+    /** The pick's poster, decoded a little over the tall card's size; null without one (the card uses the backdrop). */
+    private Bitmap poster(Pick p) {
+        if (p.poster == null) return null;
+        File f = posterFile(p);
+        try {
+            download(POSTERS + p.poster, f);
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(f.getPath(), bounds);
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inSampleSize = 1;
+            while (bounds.outWidth / (opts.inSampleSize * 2) >= Backdrop.TALL_W) opts.inSampleSize *= 2;
+            Bitmap b = BitmapFactory.decodeFile(f.getPath(), opts);
+            if (b == null) throw new IOException("unreadable poster");
+            return b;
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            //noinspection ResultOfMethodCallIgnored
+            f.delete();
+            AppLog.w("poster \u201c" + p.title + "\u201d: " + e.getMessage());
+            return null;
         }
     }
 
@@ -776,9 +829,9 @@ final class Recs {
             if (parts[i].lastModified() < stale) parts[i].delete();
         }
         File[] files = dir.listFiles((d, name) -> !name.endsWith(".part"));
-        if (files == null || files.length <= 24) return;
+        if (files == null || files.length <= 48) return;   // a backdrop and a poster for each of the 24 titles
         Arrays.sort(files, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
-        for (int i = 0; i < files.length - 24; i++) {
+        for (int i = 0; i < files.length - 48; i++) {
             //noinspection ResultOfMethodCallIgnored
             files[i].delete();
         }
@@ -790,7 +843,7 @@ final class Recs {
         try {
             JSONArray a = new JSONArray();
             for (Pick p : picks) {
-                a.put(new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop).put("link", p.link == null ? "" : p.link)
+                a.put(new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop).put("poster", p.poster == null ? "" : p.poster).put("link", p.link == null ? "" : p.link)
                         .put("meta", p.meta).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
                         .put("detailed", p.detailed));
             }
@@ -816,6 +869,7 @@ final class Recs {
             p.kind = o.optString("kind");
             p.title = o.optString("title");
             p.backdrop = o.optString("backdrop");
+            p.poster = path(o.optString("poster"));
             p.link = o.optString("link").isEmpty() ? null : o.optString("link");
             p.meta = o.optString("meta");
             p.app = o.optString("app").isEmpty() ? null : o.optString("app");

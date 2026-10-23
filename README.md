@@ -15,6 +15,20 @@ Open source. Built with Claude Code. One button to undo.
 
 </div>
 
+## In this fork
+
+Changes on top of [simbasjungles/free-my-tv](https://github.com/simbasjungles/free-my-tv) (Google TV / Android TV only;
+the LG and Samsung web app is unchanged):
+
+- **Layout** (Home Settings): *Classic*, or *Expanded*: a wide card and four posters (five picks a tab), and a shelf of
+  up to 14 apps in two balanced rows.
+- **Posters**: the tall cards show the title's TMDB poster instead of a slice of its backdrop.
+- **Settings shortcuts**: Wi-Fi, Bluetooth pairing, Display & Sound, Apps, Storage and Developer options, in the bottom
+  drawer and as top buttons (*Top Buttons*). Only the ones the TV can open are shown; Bluetooth pairing may ask once for
+  *Nearby devices* on Android 12+.
+- **CloudStream**: with CloudStream installed, a pick opens CloudStream's search for that title instead of the
+  service's app.
+
 ## What you get
 
 - **No ads.** No sponsored rows, banners or autoplaying promos. Not one.

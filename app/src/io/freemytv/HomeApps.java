@@ -57,6 +57,8 @@ final class HomeApps {
     static final int APP = 0, LIVE_TV = 1, INPUT = 2, ALL_APPS = 3, SETTINGS = 4, ANDROID_SETTINGS = 5;
     /** The "HDMI Inputs" button: opens the bottom drawer on the inputs (the home screen handles it). */
     static final int INPUTS = 7;
+    /** A screen of the TV's own settings (Wi-Fi, Bluetooth…): opens `intent`. */
+    static final int SYSTEM = 8;
     /** Image size of each card (16:9; on screen it shows up to ~330 px wide). */
     static final int TILE_W = 384, TILE_H = 216;
 
@@ -65,6 +67,8 @@ final class HomeApps {
         String key, label, pkg, inputId, number;
         String uri;         // opens this address in the app instead of the app's home (a title's page)
         String symbol;      // icon for the shortcuts and special cards
+        Intent intent;      // SYSTEM: the settings screen it opens
+        String permission;  // SYSTEM: what that screen asks of us, still to be granted (asked for on the first press)
         Bitmap tile;        // 16:9 card (apps and specials)
         Bitmap logo;        // colored logo with no background (shelf); null = use the card
         Bitmap logoDark;    // version for a light background (YouTube's white icon), if any
@@ -74,7 +78,7 @@ final class HomeApps {
     }
 
     /**
-     * Apps on the home shelf, in this order, when installed (up to MAX_SHELF): key, name, package, brand color (for
+     * Apps on the home shelf, in this order, when installed (up to maxShelf()): key, name, package, brand color (for
      * its logo on glass) and how to lift the logo from the app's TV art: "tint" = a white logo takes the art's
      * background color (Prime Video, Globoplay); "play" = the white triangle inside the red button stays white
      * (YouTube); empty = the art's colors as they are. Last, a visual size tweak for the logo. Edit freely.
@@ -94,7 +98,12 @@ final class HomeApps {
         {"globoplay", "Globoplay", "com.globo.globotv", "FF5A1F", "tint", "1"},
         {"spotify", "Spotify", "com.spotify.tv.android", "1DB954", "", "1"},
     };
-    static final int MAX_SHELF = 8;
+    static final int MAX_SHELF = 8, MAX_SHELF_EXPANDED = 14;
+
+    /** How many apps the shelf holds in the current layout (the expanded one has two rows). */
+    static int maxShelf() {
+        return Prefs.expanded() ? MAX_SHELF_EXPANDED : MAX_SHELF;
+    }
     /** Live TV apps of some brands (the antenna's channels open through the standard Android request first). */
     static final String[] LIVE_TV_APPS = {"com.tcl.tv", "com.google.android.tv", "com.mediatek.wwtv.tvcenter", "com.sony.dtv.tvx",
             "com.smartdevice.livetv", "com.mediatek.tv.oneworld.tvcenter"};
@@ -127,7 +136,7 @@ final class HomeApps {
         List<Item> items = new ArrayList<>();
         PackageManager pm = c.getPackageManager();
         for (String pkg : shelfPackages(c)) {
-            if (items.size() >= MAX_SHELF) break;
+            if (items.size() >= maxShelf()) break;
             Intent launch = launchIntent(pm, pkg);
             if (launch == null) continue;
             ResolveInfo ri = pm.resolveActivity(launch, 0);
@@ -165,7 +174,7 @@ final class HomeApps {
         if (custom != null) return custom;
         List<String> out = new ArrayList<>();
         PackageManager pm = c.getPackageManager();
-        for (String[] d : SHELF) if (out.size() < MAX_SHELF && launchIntent(pm, d[2]) != null) out.add(d[2]);
+        for (String[] d : SHELF) if (out.size() < maxShelf() && launchIntent(pm, d[2]) != null) out.add(d[2]);
         return out;
     }
 
@@ -189,18 +198,35 @@ final class HomeApps {
 
     static final String TOP_LIVE = "live", TOP_INPUTS = "inputs", TOP_SETTINGS = "settings";
     static final List<String> TOP_DEFAULT = Collections.unmodifiableList(java.util.Arrays.asList(TOP_LIVE, TOP_INPUTS, TOP_SETTINGS));
-    static final int MAX_TOP = TOP_DEFAULT.size();
+
+    /**
+     * Shortcuts to the TV's own settings: key, icon, then the ways to open it (a Settings action or a
+     * "package/.Activity"), the first one this TV has wins. TVs that have none of them don't show the shortcut.
+     * Names: systemLabel.
+     */
+    private static final String[][] SYSTEM_SHORTCUTS = {
+        {"wifi", "wifi", Settings.ACTION_WIFI_SETTINGS},
+        {"bluetooth", "bluetooth", "com.google.android.intent.action.CONNECT_INPUT", Settings.ACTION_BLUETOOTH_SETTINGS},
+        {"display", "display", Settings.ACTION_DISPLAY_SETTINGS, Settings.ACTION_SOUND_SETTINGS},
+        {"apps-settings", "apps", "com.android.tv.settings/.device.apps.AppsActivity",
+                Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS},
+        {"storage", "storage", Settings.ACTION_INTERNAL_STORAGE_SETTINGS},
+        {"developer", "code", Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS},
+    };
+    static final int MAX_TOP = TOP_DEFAULT.size() + SYSTEM_SHORTCUTS.length;
+    private static Map<String, Item> systemShortcuts;   // the ones this TV has, by key
+    private static int systemShortcutsGeneration = -1;   // Ui.generation they were named in
 
     /** The keys of the top buttons, in order (Settings > Top Buttons; by default Live TV, HDMI Inputs, Settings). */
     static List<String> topButtonKeys() {
         List<String> saved = Prefs.topButtons();
         if (saved == null) return TOP_DEFAULT;
         List<String> keys = new ArrayList<>();
-        for (String key : saved) if (TOP_DEFAULT.contains(key) && !keys.contains(key)) keys.add(key);
+        for (String key : saved) if ((TOP_DEFAULT.contains(key) || systemShortcut(key) != null) && !keys.contains(key)) keys.add(key);
         return keys;
     }
 
-    /** The top buttons, ready to draw (0 to 3 of them). */
+    /** The top buttons, ready to draw (0 to MAX_TOP of them). */
     static List<Item> topButtons() {
         List<Item> items = new ArrayList<>();
         for (String key : topButtonKeys()) items.add(topButton(key));
@@ -208,6 +234,8 @@ final class HomeApps {
     }
 
     private static Item topButton(String key) {
+        Item system = systemShortcut(key);
+        if (system != null) return system;
         switch (key) {
             case TOP_LIVE: return action(LIVE_TV, TOP_LIVE, Ui.tr("light|Live TV"), "live_tv");
             case TOP_INPUTS: return action(INPUTS, TOP_INPUTS, Ui.tr("HDMI Inputs"), "hdmi");
@@ -219,6 +247,7 @@ final class HomeApps {
     static List<String[]> topCandidates() {
         List<String[]> out = new ArrayList<>();
         for (String key : TOP_DEFAULT) out.add(new String[] {key, topButton(key).label});
+        for (Item it : systemShortcuts().values()) out.add(new String[] {it.key, it.label});
         return out;
     }
 
@@ -258,7 +287,55 @@ final class HomeApps {
         items.add(shortcut(ALL_APPS, "all", Ui.tr("All Apps"), "apps"));
         items.add(shortcut(SETTINGS, "settings", Ui.tr("Home Settings"), "settings"));
         items.add(shortcut(ANDROID_SETTINGS, "tv-settings", Ui.tr("TV Settings"), "tv_settings"));
+        items.addAll(systemShortcuts().values());
         return items;
+    }
+
+    /** A settings shortcut's name, in the TV's language. */
+    private static String systemLabel(String key) {
+        switch (key) {
+            case "wifi": return Ui.tr("Wi-Fi");
+            case "bluetooth": return Ui.tr("Bluetooth");
+            case "display": return Ui.tr("Display & Sound");
+            case "apps-settings": return Ui.tr("Apps");
+            case "storage": return Ui.tr("Storage");
+            default: return Ui.tr("Developer options");
+        }
+    }
+
+    private static Item systemShortcut(String key) {
+        return systemShortcuts().get(key);
+    }
+
+    /** The settings shortcuts this TV can open, in SYSTEM_SHORTCUTS order (looked up again when the language changes). */
+    private static synchronized Map<String, Item> systemShortcuts() {
+        if (systemShortcuts != null && systemShortcutsGeneration == Ui.generation) return systemShortcuts;
+        Map<String, Item> found = new java.util.LinkedHashMap<>();
+        Context c = Prefs.context();
+        if (c == null) return found;
+        PackageManager pm = c.getPackageManager();
+        for (String[] s : SYSTEM_SHORTCUTS) {
+            for (int i = 2; i < s.length; i++) {
+                Intent intent = s[i].contains("/") ? new Intent().setComponent(ComponentName.unflattenFromString(s[i]))
+                        : new Intent(s[i]);
+                ResolveInfo ri = pm.resolveActivity(intent, 0);
+                // ResolverActivity = several apps answer: the TV would ask which one, not open settings.
+                if (ri == null || !ri.activityInfo.exported || ri.activityInfo.name.endsWith("ResolverActivity")) continue;
+                // Screens behind a permission we don't hold would be listed and then refuse to open; the one we
+                // declare (Nearby devices, for pairing) is asked for on the first press.
+                String needs = ri.activityInfo.permission;
+                boolean missing = needs != null && c.checkSelfPermission(needs) != PackageManager.PERMISSION_GRANTED;
+                if (missing && !android.Manifest.permission.BLUETOOTH_CONNECT.equals(needs)) continue;
+                Item it = shortcut(SYSTEM, s[0], systemLabel(s[0]), s[1]);
+                it.intent = intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                it.permission = missing ? needs : null;
+                found.put(s[0], it);
+                break;
+            }
+        }
+        systemShortcuts = found;
+        systemShortcutsGeneration = Ui.generation;
+        return found;
     }
 
     /** A streaming service's app (the "Watch" button of the featured pick). */
@@ -426,6 +503,13 @@ final class HomeApps {
                 break;
             case ANDROID_SETTINGS:
                 intent = new Intent(Settings.ACTION_SETTINGS);
+                break;
+            case SYSTEM:
+                if (it.permission != null && a.checkSelfPermission(it.permission) != PackageManager.PERMISSION_GRANTED) {
+                    a.requestPermissions(new String[] {it.permission}, 0);   // once allowed, the next press opens it
+                    return true;
+                }
+                intent = new Intent(it.intent);
                 break;
             default:
                 return false;

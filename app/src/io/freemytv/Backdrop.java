@@ -16,9 +16,10 @@ import android.graphics.Shader;
  *  - the frosted version (192×108, heavily blurred) of the same image: the background of the frosted glass and of the
  *    bottom drawer;
  *  - the Liquid Glass version (480×270, lightly blurred): the photo shows through the shelf and the cards;
- *  - with forLight: the cards (the photo without scrims, cropped wide and tall, already at the focused card size) and
+ *  - with forLight: the cards (the photo without scrims, cropped wide; the tall one from the poster when TMDB has one;
+ *    both already at the focused card size, which depends on the layout) and
  *    the frosted and glass versions blended with white (by day) and with near-black (at night).
- * Only what is needed gets built (with forLight, no full photo: the cards are lightweight, so all 9 for the three tabs
+ * Only what is needed gets built (with forLight, no full photo: the cards are lightweight, so all 15 for the three tabs
  * fit in memory, ready); the other fields stay null.
  * The final image lives only in GPU memory (HARDWARE): drawing it costs one texture, and the process doesn't hold 8 MB.
  */
@@ -28,6 +29,8 @@ final class Backdrop {
     static final int W = ui(1920), H = ui(1080), FW = 192, FH = 108, GW = 480, GH = 270;
     /** The cards at their focused size (1.05×): the wide one and the two tall ones. */
     static final int WIDE_W = ui(1092), WIDE_H = ui(464), TALL_W = ui(336), TALL_H = ui(464);
+    /** The same in the expanded layout: a narrower wide card and four tall ones, all shorter. */
+    static final int EXP_WIDE_W = ui(672), EXP_WIDE_H = ui(378), EXP_TALL_W = ui(252), EXP_TALL_H = ui(378);
 
     private static float uiScale() {
         android.util.DisplayMetrics m = android.content.res.Resources.getSystem().getDisplayMetrics();
@@ -62,7 +65,8 @@ final class Backdrop {
         nightImage = night == null ? null : Bitmap.createBitmap(night, FW, FH, Bitmap.Config.ARGB_8888);
     }
 
-    static Backdrop make(Bitmap src, boolean forLight) {
+    /** `poster` (or null) becomes the tall card; it is recycled here. */
+    static Backdrop make(Bitmap src, Bitmap poster, boolean forLight, boolean expanded) {
         Bitmap out = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(out);
         Paint photo = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
@@ -72,7 +76,10 @@ final class Backdrop {
         src.recycle();
         if (forLight) {
             // Light design: everything comes from the photo without scrims.
-            Bitmap wide = card(out, WIDE_W, WIDE_H), tall = card(out, TALL_W, TALL_H);
+            int tw = expanded ? EXP_TALL_W : TALL_W, th = expanded ? EXP_TALL_H : TALL_H;
+            Bitmap wide = expanded ? card(out, EXP_WIDE_W, EXP_WIDE_H) : card(out, WIDE_W, WIDE_H);
+            Bitmap tall = card(poster != null ? poster : out, tw, th);
+            if (poster != null) poster.recycle();
             int[] frost = reduce(out, FW, FH, 3, 3);
             int[] light = whiten(frost.clone(), 0.82f);
             int[] glass = reduce(out, GW, GH, 2, 2);

@@ -96,6 +96,15 @@ final class Prefs {
 
     static void setTheme(String v) { put("theme", v); }
 
+    /** Home screen layout: "classic" (a wide card, two tall ones, one shelf row) or "expanded" (four tall, two rows). */
+    static String layout() {
+        return "expanded".equals(sp().getString("layout", "classic")) ? "expanded" : "classic";
+    }
+
+    static boolean expanded() { return app != null && layout().equals("expanded"); }
+
+    static void setLayout(String v) { put("layout", v); }
+
     // MARK: - City
 
     static String city() { return sp().getString("city", Config.CITY).trim(); }
