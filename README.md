@@ -26,6 +26,7 @@ the LG and Samsung web app is unchanged):
 - **Settings shortcuts**: Wi-Fi, Bluetooth pairing, Display & Sound, Apps, Storage and Developer options, in the bottom
   drawer and as top buttons (*Top Buttons*). Only the ones the TV can open are shown; Bluetooth pairing may ask once for
   *Nearby devices* on Android 12+.
+- **Shelf menu**: hold OK on a shelf app for Move, App info, Remove from shelf and (apps you installed) Uninstall.
 - **CloudStream**: with CloudStream installed, a pick opens CloudStream's search for that title instead of the
   service's app.
 
